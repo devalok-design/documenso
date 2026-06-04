@@ -1,3 +1,9 @@
+import { resolveExpiresAt } from '@documenso/lib/constants/envelope-expiration';
+import { DOCUMENT_AUDIT_LOG_TYPE } from '@documenso/lib/types/document-audit-logs';
+import type { ApiRequestMetadata } from '@documenso/lib/universal/extract-request-metadata';
+import { createDocumentAuditLogData } from '@documenso/lib/utils/document-audit-logs';
+import { prisma } from '@documenso/prisma';
+import { checkboxValidationSigns } from '@documenso/ui/primitives/document-flow/field-items-advanced-settings/constants';
 import type { DocumentData, Envelope, EnvelopeItem, Field, Recipient } from '@prisma/client';
 import {
   DocumentSigningOrder,
@@ -9,13 +15,6 @@ import {
   SigningStatus,
   WebhookTriggerEvents,
 } from '@prisma/client';
-
-import { resolveExpiresAt } from '@documenso/lib/constants/envelope-expiration';
-import { DOCUMENT_AUDIT_LOG_TYPE } from '@documenso/lib/types/document-audit-logs';
-import type { ApiRequestMetadata } from '@documenso/lib/universal/extract-request-metadata';
-import { createDocumentAuditLogData } from '@documenso/lib/utils/document-audit-logs';
-import { prisma } from '@documenso/prisma';
-import { checkboxValidationSigns } from '@documenso/ui/primitives/document-flow/field-items-advanced-settings/constants';
 
 import { validateCheckboxLength } from '../../advanced-fields-validation/validate-checkbox';
 import { DIRECT_TEMPLATE_RECIPIENT_EMAIL } from '../../constants/direct-templates';
@@ -30,22 +29,17 @@ import {
   ZRadioFieldMeta,
   ZTextFieldMeta,
 } from '../../types/field-meta';
-import {
-  ZWebhookDocumentSchema,
-  mapEnvelopeToWebhookDocumentPayload,
-} from '../../types/webhook-payload';
+import { mapEnvelopeToWebhookDocumentPayload, ZWebhookDocumentSchema } from '../../types/webhook-payload';
 import { getFileServerSide } from '../../universal/upload/get-file.server';
 import { putNormalizedPdfFileServerSide } from '../../universal/upload/put-file.server';
 import { isDocumentCompleted } from '../../utils/document';
 import { extractDocumentAuthMethods } from '../../utils/document-auth';
 import { type EnvelopeIdOptions, mapSecondaryIdToDocumentId } from '../../utils/envelope';
 import { toCheckboxCustomText, toRadioCustomText } from '../../utils/fields';
-import {
-  getRecipientsWithMissingFields,
-  isRecipientEmailValidForSending,
-} from '../../utils/recipients';
+import { getRecipientsWithMissingFields, isRecipientEmailValidForSending } from '../../utils/recipients';
 import { getEnvelopeWhereInput } from '../envelope/get-envelope-by-id';
 import { insertFormValuesInPdf } from '../pdf/insert-form-values-in-pdf';
+import { assertUserNotDisabledById } from '../user/assert-user-not-disabled';
 import { triggerWebhook } from '../webhooks/trigger/trigger-webhook';
 
 export type SendDocumentOptions = {
@@ -56,13 +50,12 @@ export type SendDocumentOptions = {
   requestMetadata: ApiRequestMetadata;
 };
 
-export const sendDocument = async ({
-  id,
-  userId,
-  teamId,
-  sendEmail,
-  requestMetadata,
-}: SendDocumentOptions) => {
+export const sendDocument = async ({ id, userId, teamId, sendEmail, requestMetadata }: SendDocumentOptions) => {
+  // Refuse to send on behalf of a disabled account. Guards distribute /
+  // redistribute / template-use routes, the bulk-send job, and direct
+  // templates that auto-send on creation.
+  await assertUserNotDisabledById({ userId });
+
   const { envelopeWhereInput } = await getEnvelopeWhereInput({
     id,
     type: EnvelopeType.DOCUMENT,
@@ -91,6 +84,19 @@ export const sendDocument = async ({
           },
         },
       },
+      team: {
+        select: {
+          organisation: {
+            select: {
+              organisationClaim: {
+                select: {
+                  recipientCount: true,
+                },
+              },
+            },
+          },
+        },
+      },
     },
   });
 
@@ -100,6 +106,16 @@ export const sendDocument = async ({
 
   if (envelope.recipients.length === 0) {
     throw new Error('Document has no recipients');
+  }
+
+  // A recipientCount of 0 means unlimited recipients are allowed.
+  const maximumRecipientCount = envelope.team.organisation.organisationClaim.recipientCount;
+
+  if (maximumRecipientCount > 0 && envelope.recipients.length > maximumRecipientCount) {
+    throw new AppError('RECIPIENT_LIMIT_EXCEEDED', {
+      message: `You cannot send a document with more than ${maximumRecipientCount} recipients`,
+      statusCode: 400,
+    });
   }
 
   if (isDocumentCompleted(envelope.status)) {
@@ -117,10 +133,6 @@ export const sendDocument = async ({
     recipientsToNotify = envelope.recipients
       .filter((r) => r.signingStatus === SigningStatus.NOT_SIGNED && r.role !== RecipientRole.CC)
       .slice(0, 1);
-
-    // Secondary filter so we aren't resending if the current active recipient has already
-    // received the envelope.
-    recipientsToNotify.filter((r) => r.sendStatus !== SendStatus.SENT);
   }
 
   if (envelope.envelopeItems.length === 0) {
@@ -154,10 +166,7 @@ export const sendDocument = async ({
   });
 
   // Validate that recipients who require fields (e.g., signers need signature fields) have them.
-  const recipientsWithMissingFields = getRecipientsWithMissingFields(
-    envelope.recipients,
-    envelope.fields,
-  );
+  const recipientsWithMissingFields = getRecipientsWithMissingFields(envelope.recipients, envelope.fields);
 
   if (recipientsWithMissingFields.length > 0) {
     const missingRecipientDescriptions = recipientsWithMissingFields
@@ -170,8 +179,7 @@ export const sendDocument = async ({
   }
 
   const allRecipientsHaveNoActionToTake = envelope.recipients.every(
-    (recipient) =>
-      recipient.role === RecipientRole.CC || recipient.signingStatus === SigningStatus.SIGNED,
+    (recipient) => recipient.role === RecipientRole.CC || recipient.signingStatus === SigningStatus.SIGNED,
   );
 
   if (allRecipientsHaveNoActionToTake) {
@@ -452,11 +460,7 @@ export const extractFieldAutoInsertValues = (
 
   // Auto insert checkbox fields with the pre-checked values.
   if (field.type === FieldType.CHECKBOX) {
-    const {
-      values = [],
-      validationRule,
-      validationLength,
-    } = ZCheckboxFieldMeta.parse(field.fieldMeta);
+    const { values = [], validationRule, validationLength } = ZCheckboxFieldMeta.parse(field.fieldMeta);
 
     const checkedIndices: number[] = [];
 

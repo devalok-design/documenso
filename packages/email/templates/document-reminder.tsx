@@ -1,8 +1,7 @@
+import { RECIPIENT_ROLES_DESCRIPTION } from '@documenso/lib/constants/recipient-roles';
 import { msg } from '@lingui/core/macro';
 import { useLingui } from '@lingui/react';
 import { RecipientRole } from '@prisma/client';
-
-import { RECIPIENT_ROLES_DESCRIPTION } from '@documenso/lib/constants/recipient-roles';
 
 import { Body, Container, Head, Hr, Html, Img, Preview, Section, Text } from '../components';
 import { useBranding } from '../providers/branding';
@@ -17,6 +16,7 @@ export type DocumentReminderEmailTemplateProps = {
   assetBaseUrl?: string;
   customBody?: string;
   role: RecipientRole;
+  reportUrl?: string;
 };
 
 export const DocumentReminderEmailTemplate = ({
@@ -26,6 +26,7 @@ export const DocumentReminderEmailTemplate = ({
   assetBaseUrl = 'http://localhost:3002',
   customBody,
   role = RecipientRole.SIGNER,
+  reportUrl,
 }: DocumentReminderEmailTemplateProps) => {
   const { _ } = useLingui();
   const branding = useBranding();
@@ -45,16 +46,12 @@ export const DocumentReminderEmailTemplate = ({
 
       <Body className="mx-auto my-auto bg-white font-sans">
         <Section>
-          <Container className="mx-auto mb-2 mt-8 max-w-xl rounded-lg border border-solid border-slate-200 p-4 backdrop-blur-sm">
+          <Container className="mx-auto mt-8 mb-2 max-w-xl rounded-lg border border-slate-200 border-solid p-4 backdrop-blur-sm">
             <Section>
               {branding.brandingEnabled && branding.brandingLogo ? (
                 <Img src={branding.brandingLogo} alt="Branding Logo" className="mb-4 h-6" />
               ) : (
-                <Img
-                  src={getAssetUrl('/static/logo.png')}
-                  alt="Documenso Logo"
-                  className="mb-4 h-6"
-                />
+                <Img src={getAssetUrl('/static/logo.png')} alt="Documenso Logo" className="mb-4 h-6" />
               )}
 
               <TemplateDocumentReminder
@@ -80,7 +77,7 @@ export const DocumentReminderEmailTemplate = ({
           <Hr className="mx-auto mt-12 max-w-xl" />
 
           <Container className="mx-auto max-w-xl">
-            <TemplateFooter />
+            <TemplateFooter reportUrl={reportUrl} />
           </Container>
         </Section>
       </Body>

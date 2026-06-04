@@ -4,6 +4,13 @@ This is `devalok-design/documenso`, a fork of `documenso/documenso` used to self
 
 It is **not** a real GitHub fork — Railway's eject pushed a squashed initial commit. Upstream sync is done via `git remote`, not the GitHub "Sync fork" button.
 
+## Sync history
+
+| Date | Upstream HEAD | Notes |
+|---|---|---|
+| 2026-05-04 | (initial Railway eject) | Squashed initial commit `af5d802` |
+| 2026-06-04 | `0ecde7a` | First upstream sync. 86 commits absorbed (~v2.10.x → v2.11.x territory). 4 additive Prisma migrations applied. Guards re-applied to all 14 upstream-only workflows. |
+
 ## Upstream sync
 
 ```bash

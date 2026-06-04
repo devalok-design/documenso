@@ -1,5 +1,6 @@
-import { createElement } from 'react';
-
+import { mailer } from '@documenso/email/mailer';
+import DocumentReminderEmailTemplate from '@documenso/email/templates/document-reminder';
+import { prisma } from '@documenso/prisma';
 import { msg } from '@lingui/core/macro';
 import {
   DocumentDistributionMethod,
@@ -10,36 +11,26 @@ import {
   SigningStatus,
   WebhookTriggerEvents,
 } from '@prisma/client';
-
-import { mailer } from '@documenso/email/mailer';
-import DocumentReminderEmailTemplate from '@documenso/email/templates/document-reminder';
-import { prisma } from '@documenso/prisma';
+import { createElement } from 'react';
 
 import { getI18nInstance } from '../../../client-only/providers/i18n-server';
 import { NEXT_PUBLIC_WEBAPP_URL } from '../../../constants/app';
 import { RECIPIENT_ROLES_DESCRIPTION } from '../../../constants/recipient-roles';
+import { buildEnvelopeEmailHeaders } from '../../../server-only/email/build-envelope-email-headers';
 import { getEmailContext } from '../../../server-only/email/get-email-context';
+import { assertOrganisationRatesAndLimits } from '../../../server-only/rate-limit/assert-organisation-rates-and-limits';
 import { updateRecipientNextReminder } from '../../../server-only/recipient/update-recipient-next-reminder';
 import { triggerWebhook } from '../../../server-only/webhooks/trigger/trigger-webhook';
 import { DOCUMENT_AUDIT_LOG_TYPE, DOCUMENT_EMAIL_TYPE } from '../../../types/document-audit-logs';
 import { extractDerivedDocumentEmailSettings } from '../../../types/document-email';
-import {
-  ZWebhookDocumentSchema,
-  mapEnvelopeToWebhookDocumentPayload,
-} from '../../../types/webhook-payload';
+import { mapEnvelopeToWebhookDocumentPayload, ZWebhookDocumentSchema } from '../../../types/webhook-payload';
 import { createDocumentAuditLogData } from '../../../utils/document-audit-logs';
 import { renderCustomEmailTemplate } from '../../../utils/render-custom-email-template';
 import { renderEmailWithI18N } from '../../../utils/render-email-with-i18n';
 import type { JobRunIO } from '../../client/_internal/job';
 import type { TProcessSigningReminderJobDefinition } from './process-signing-reminder';
 
-export const run = async ({
-  payload,
-  io,
-}: {
-  payload: TProcessSigningReminderJobDefinition;
-  io: JobRunIO;
-}) => {
+export const run = async ({ payload, io }: { payload: TProcessSigningReminderJobDefinition; io: JobRunIO }) => {
   const { recipientId } = payload;
   const now = new Date();
 
@@ -111,30 +102,38 @@ export const run = async ({
     return;
   }
 
-  const { branding, emailLanguage, organisationType, senderEmail, replyToEmail } =
-    await getEmailContext({
-      emailType: 'RECIPIENT',
-      source: {
-        type: 'team',
-        teamId: envelope.teamId,
-      },
-      meta: envelope.documentMeta,
-    });
+  const {
+    branding,
+    emailLanguage,
+    organisationType,
+    senderEmail,
+    replyToEmail,
+    isOrganisationOwnerDisabled,
+    organisationId,
+    claims,
+  } = await getEmailContext({
+    emailType: 'RECIPIENT',
+    source: {
+      type: 'team',
+      teamId: envelope.teamId,
+    },
+    meta: envelope.documentMeta,
+  });
+
+  // Don't send reminders on behalf of a disabled (e.g. banned) account.
+  if (envelope.user.disabled || isOrganisationOwnerDisabled) {
+    io.logger.info(`Envelope ${envelope.id} owner is disabled, skipping reminder`);
+    return;
+  }
 
   const i18n = await getI18nInstance(emailLanguage);
 
-  const recipientActionVerb = i18n
-    ._(RECIPIENT_ROLES_DESCRIPTION[recipient.role].actionVerb)
-    .toLowerCase();
+  const recipientActionVerb = i18n._(RECIPIENT_ROLES_DESCRIPTION[recipient.role].actionVerb).toLowerCase();
 
-  let emailSubject = i18n._(
-    msg`Reminder: Please ${recipientActionVerb} the document "${envelope.title}"`,
-  );
+  let emailSubject = i18n._(msg`Reminder: Please ${recipientActionVerb} the document "${envelope.title}"`);
 
   if (organisationType === OrganisationType.ORGANISATION) {
-    emailSubject = i18n._(
-      msg`Reminder: ${envelope.team.name} invited you to ${recipientActionVerb} a document`,
-    );
+    emailSubject = i18n._(msg`Reminder: ${envelope.team.name} invited you to ${recipientActionVerb} a document`);
   }
 
   const customEmailTemplate = {
@@ -156,62 +155,92 @@ export const run = async ({
 
   const assetBaseUrl = NEXT_PUBLIC_WEBAPP_URL() || 'http://localhost:3000';
   const signDocumentLink = `${NEXT_PUBLIC_WEBAPP_URL()}/sign/${recipient.token}`;
+  const reportUrl = `${NEXT_PUBLIC_WEBAPP_URL()}/report/${recipient.token}`;
 
-  io.logger.info(
-    `Sending signing reminder for envelope ${envelope.id} to recipient ${recipient.id} (${recipient.email})`,
-  );
-
-  const template = createElement(DocumentReminderEmailTemplate, {
-    recipientName: recipient.name,
-    documentName: envelope.title,
-    assetBaseUrl,
-    signDocumentLink,
-    customBody: emailMessage,
-    role: recipient.role,
-  });
-
-  const [html, text] = await Promise.all([
-    renderEmailWithI18N(template, { lang: emailLanguage, branding }),
-    renderEmailWithI18N(template, {
-      lang: emailLanguage,
-      branding,
-      plainText: true,
-    }),
-  ]);
-
-  await mailer.sendMail({
-    to: {
-      name: recipient.name,
-      address: recipient.email,
-    },
-    from: senderEmail,
-    replyTo: replyToEmail,
-    subject: emailSubject,
-    html,
-    text,
-  });
-
-  await prisma.documentAuditLog.create({
-    data: createDocumentAuditLogData({
-      type: DOCUMENT_AUDIT_LOG_TYPE.EMAIL_SENT,
-      envelopeId: envelope.id,
-      data: {
-        recipientEmail: recipient.email,
-        recipientName: recipient.name,
+  // Meter reminder emails against the organisation email quota/stats. Reminders
+  // are unsolicited (the recipient didn't opt in to them) and can recur, so they
+  // must be bounded by the same org limits as other outbound emails.
+  const isRateLimited = await assertOrganisationRatesAndLimits({
+    organisationId,
+    organisationClaim: claims,
+    type: 'email',
+    count: 1,
+  })
+    .then(() => false)
+    .catch((_err) => {
+      io.logger.warn({
+        msg: 'Signing reminder dropped: org email limit exceeded',
+        organisationId,
         recipientId: recipient.id,
-        recipientRole: recipient.role,
-        emailType: DOCUMENT_EMAIL_TYPE.REMINDER,
-        isResending: false,
-      },
-    }),
-  });
+        envelopeId: envelope.id,
+      });
 
-  await triggerWebhook({
-    event: WebhookTriggerEvents.DOCUMENT_REMINDER_SENT,
-    data: ZWebhookDocumentSchema.parse(mapEnvelopeToWebhookDocumentPayload(envelope)),
-    userId: envelope.userId,
-    teamId: envelope.teamId,
-  });
+      return true;
+    });
+
+  if (!isRateLimited) {
+    io.logger.info(
+      `Sending signing reminder for envelope ${envelope.id} to recipient ${recipient.id} (${recipient.email})`,
+    );
+
+    const template = createElement(DocumentReminderEmailTemplate, {
+      recipientName: recipient.name,
+      documentName: envelope.title,
+      assetBaseUrl,
+      signDocumentLink,
+      customBody: emailMessage,
+      role: recipient.role,
+      reportUrl,
+    });
+
+    const [html, text] = await Promise.all([
+      renderEmailWithI18N(template, { lang: emailLanguage, branding }),
+      renderEmailWithI18N(template, {
+        lang: emailLanguage,
+        branding,
+        plainText: true,
+      }),
+    ]);
+
+    await mailer.sendMail({
+      to: {
+        name: recipient.name,
+        address: recipient.email,
+      },
+      from: senderEmail,
+      replyTo: replyToEmail,
+      subject: emailSubject,
+      html,
+      text,
+      headers: buildEnvelopeEmailHeaders({
+        userId: envelope.userId,
+        envelopeId: envelope.id,
+        teamId: envelope.teamId,
+      }),
+    });
+
+    await prisma.documentAuditLog.create({
+      data: createDocumentAuditLogData({
+        type: DOCUMENT_AUDIT_LOG_TYPE.EMAIL_SENT,
+        envelopeId: envelope.id,
+        data: {
+          recipientEmail: recipient.email,
+          recipientName: recipient.name,
+          recipientId: recipient.id,
+          recipientRole: recipient.role,
+          emailType: DOCUMENT_EMAIL_TYPE.REMINDER,
+          isResending: false,
+        },
+      }),
+    });
+
+    await triggerWebhook({
+      event: WebhookTriggerEvents.DOCUMENT_REMINDER_SENT,
+      data: ZWebhookDocumentSchema.parse(mapEnvelopeToWebhookDocumentPayload(envelope)),
+      userId: envelope.userId,
+      teamId: envelope.teamId,
+    });
+  }
 
   // Compute the next reminder time (repeat interval).
   if (recipient.sentAt) {

@@ -1,5 +1,3 @@
-import { P, match } from 'ts-pattern';
-
 import type { BrandingSettings } from '@documenso/email/providers/branding';
 import { prisma } from '@documenso/prisma';
 import type {
@@ -9,11 +7,8 @@ import type {
   OrganisationEmail,
   OrganisationType,
 } from '@documenso/prisma/client';
-import {
-  EmailDomainStatus,
-  type OrganisationClaim,
-  type OrganisationGlobalSettings,
-} from '@documenso/prisma/client';
+import { EmailDomainStatus, type OrganisationClaim, type OrganisationGlobalSettings } from '@documenso/prisma/client';
+import { match, P } from 'ts-pattern';
 
 import { DOCUMENSO_INTERNAL_EMAIL } from '../../constants/email';
 import { AppError, AppErrorCode } from '../../errors/app-error';
@@ -66,11 +61,12 @@ type RecipientGetEmailContextOptions = BaseGetEmailContextOptions & {
 
 type GetEmailContextOptions = InternalGetEmailContextOptions | RecipientGetEmailContextOptions;
 
-type EmailContextResponse = {
+export type EmailContextResponse = {
   allowedEmails: OrganisationEmail[];
   branding: BrandingSettings;
   settings: Omit<OrganisationGlobalSettings, 'id'>;
   claims: OrganisationClaim;
+  organisationId: string;
   organisationType: OrganisationType;
   senderEmail: {
     name: string;
@@ -78,11 +74,10 @@ type EmailContextResponse = {
   };
   replyToEmail: string | undefined;
   emailLanguage: string;
+  isOrganisationOwnerDisabled: boolean;
 };
 
-export const getEmailContext = async (
-  options: GetEmailContextOptions,
-): Promise<EmailContextResponse> => {
+export const getEmailContext = async (options: GetEmailContextOptions): Promise<EmailContextResponse> => {
   const { source, meta } = options;
 
   let emailContext: Omit<EmailContextResponse, 'senderEmail' | 'replyToEmail' | 'emailLanguage'>;
@@ -141,6 +136,11 @@ const handleOrganisationEmailContext = async (organisationId: string) => {
       id: organisationId,
     },
     include: {
+      owner: {
+        select: {
+          disabled: true,
+        },
+      },
       organisationClaim: true,
       organisationGlobalSettings: true,
       emailDomains: {
@@ -171,7 +171,9 @@ const handleOrganisationEmailContext = async (organisationId: string) => {
     ),
     settings: organisation.organisationGlobalSettings,
     claims,
+    organisationId: organisation.id,
     organisationType: organisation.type,
+    isOrganisationOwnerDisabled: organisation.owner.disabled,
   };
 };
 
@@ -184,6 +186,12 @@ const handleTeamEmailContext = async (teamId: number) => {
       teamGlobalSettings: true,
       organisation: {
         include: {
+          owner: {
+            select: {
+              id: true,
+              disabled: true,
+            },
+          },
           organisationClaim: true,
           organisationGlobalSettings: true,
           emailDomains: {
@@ -208,21 +216,16 @@ const handleTeamEmailContext = async (teamId: number) => {
 
   const allowedEmails = getAllowedEmails(organisation);
 
-  const teamSettings = extractDerivedTeamSettings(
-    organisation.organisationGlobalSettings,
-    team.teamGlobalSettings,
-  );
+  const teamSettings = extractDerivedTeamSettings(organisation.organisationGlobalSettings, team.teamGlobalSettings);
 
   return {
     allowedEmails,
-    branding: teamGlobalSettingsToBranding(
-      teamSettings,
-      teamId,
-      claims.flags.hidePoweredBy ?? false,
-    ),
+    branding: teamGlobalSettingsToBranding(teamSettings, teamId, claims.flags.hidePoweredBy ?? false),
     settings: teamSettings,
     claims,
+    organisationId: organisation.id,
     organisationType: organisation.type,
+    isOrganisationOwnerDisabled: organisation.owner.disabled,
   };
 };
 
