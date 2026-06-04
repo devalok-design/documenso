@@ -16,6 +16,7 @@ concurrency:
 
 jobs:
   pull_translations:
+    if: github.repository == 'documenso/documenso'
     name: Force pull translations
     runs-on: ubuntu-latest
     environment: Translations
