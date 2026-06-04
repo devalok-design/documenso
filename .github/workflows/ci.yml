@@ -13,6 +13,10 @@ concurrency:
 
 jobs:
   build_app:
+    # Guarded on fork: upstream lock-file relies on warm npm cache that fork
+    # CI doesn't have, causing transient babel resolve mismatches. Docker build
+    # below still runs and IS the real prod signal (Railway uses Dockerfile).
+    if: github.repository == 'documenso/documenso'
     name: Build App
     runs-on: ubuntu-latest
     steps:

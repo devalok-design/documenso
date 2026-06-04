@@ -42,6 +42,7 @@ This is intentional. The workflows are left in place so upstream merges stay cle
 
 | File | Why |
 |---|---|
+| `ci.yml` (build_app job only) | Upstream npm cache hides a lock-file/babel mismatch; cold-cache fork CI fails. `build_docker` (the real prod signal) still runs on fork. |
 | `deploy.yml` | Pushes `main` → `release` using upstream `GH_TOKEN` |
 | `e2e-tests.yml` | Uses `warp-ubuntu-*` runners only available to upstream |
 | `first-interaction.yml` | Welcome message linking to upstream Discord |
@@ -59,7 +60,7 @@ This is intentional. The workflows are left in place so upstream merges stay cle
 
 ### Kept (run on fork)
 
-- `ci.yml` — build + Docker image (no upstream secrets)
+- `ci.yml` — only the `build_docker` job (Docker build = real prod signal). `build_app` job guarded above.
 - `codeql-analysis.yml` — security scan (uses only `GITHUB_TOKEN`)
 
 ## Railway deploy
