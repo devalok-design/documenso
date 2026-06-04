@@ -11,6 +11,7 @@ concurrency:
 
 jobs:
   e2e_tests:
+    if: github.repository == 'documenso/documenso'
     name: 'E2E Tests'
     timeout-minutes: 60
     runs-on: warp-ubuntu-2204-x64-8x
