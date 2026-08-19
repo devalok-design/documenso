@@ -72,17 +72,25 @@ export const reportSenderRateLimit = createRateLimit({
   window: '7d',
 });
 
+// ---- Billing ----
+
+export const syncSubscriptionRateLimit = createRateLimit({
+  action: 'billing.sync-subscription',
+  max: 10,
+  window: '15m',
+});
+
 // ---- API (Tier 4 - Standard) ----
 
 export const apiV1RateLimit = createRateLimit({
   action: 'api.v1',
-  max: 100,
+  max: 1000,
   window: '1m',
 });
 
 export const apiV2RateLimit = createRateLimit({
   action: 'api.v2',
-  max: 100,
+  max: 1000,
   window: '1m',
 });
 
