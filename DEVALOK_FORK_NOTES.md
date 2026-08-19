@@ -28,8 +28,9 @@ git remote add upstream https://github.com/documenso/documenso.git   # one-time
 git fetch upstream
 git checkout -b chore/upstream-merge-<yymm>
 
-# fork-only delta = workflow guards + this file. Capture it against the PREVIOUS sync base.
-git diff <previous-sync-base> HEAD -- .github/workflows DEVALOK_FORK_NOTES.md > ../fork-delta.patch
+# fork-only delta = workflow guards + this file + the Dockerfile NODE_ENV line.
+# Capture it against the PREVIOUS sync base.
+git diff <previous-sync-base> HEAD -- .github/workflows DEVALOK_FORK_NOTES.md docker/Dockerfile > ../fork-delta.patch
 
 # working tree becomes upstream/main exactly (adds, mods AND deletes)
 git read-tree -u --reset upstream/main
@@ -104,6 +105,15 @@ Expected open (intentional): `ci.yml/build_docker`, `codeql-analysis.yml/analyze
 
 - `ci.yml` — only the `build_docker` job (Docker build = real prod signal). `build_app` job guarded above.
 - `codeql-analysis.yml` — security scan (uses only `GITHUB_TOKEN`)
+
+## Fork-local code changes
+
+Keep this list short — every entry is a merge conflict waiting to happen. Anything here MUST be in the
+`fork-delta.patch` capture above, or the next `read-tree` import silently drops it.
+
+| File | Change | Why |
+|---|---|---|
+| `docker/Dockerfile` | `ENV NODE_ENV="production"` in the **runner** stage | Upstream never sets `NODE_ENV`, so self-hosters run React Router's *development* bundle and `useSecureCookies` (`packages/lib/constants/auth.ts`) stays false — session cookies get no `Secure` flag and no `__Secure-` prefix. **Must be runner-stage only**: as a Railway service variable it also reaches the build, where `npm ci` (installer stage) would omit devDependencies and break `turbo run build`. Worth upstreaming; until then it lives here. |
 
 ## Railway deploy
 

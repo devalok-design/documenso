@@ -96,6 +96,14 @@ FROM base AS runner
 ENV HUSKY 0
 ENV DOCKER_OUTPUT 1
 
+# Devalok fork-local: upstream never sets NODE_ENV, so self-hosted instances run
+# React Router's development bundle and `useSecureCookies` in
+# packages/lib/constants/auth.ts stays false -- session cookies ship without the
+# Secure flag and without the __Secure- prefix. Set here in the RUNNER stage only:
+# as a build-time variable it would make `npm ci` (installer stage) omit
+# devDependencies and break `turbo run build`.
+ENV NODE_ENV="production"
+
 # Telemetry credentials (baked into image at build time, can be disabled at runtime)
 ARG NEXT_PRIVATE_TELEMETRY_KEY=""
 ENV NEXT_PRIVATE_TELEMETRY_KEY="$NEXT_PRIVATE_TELEMETRY_KEY"
