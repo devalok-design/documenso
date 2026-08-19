@@ -8,6 +8,7 @@ jobs:
   label-when-assigned:
     if: github.repository == 'documenso/documenso'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Label issue
         uses: actions/github-script@v6

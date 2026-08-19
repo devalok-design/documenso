@@ -1,4 +1,3 @@
-import { mailer } from '@documenso/email/mailer';
 import DocumentReminderEmailTemplate from '@documenso/email/templates/document-reminder';
 import { prisma } from '@documenso/prisma';
 import { msg } from '@lingui/core/macro';
@@ -53,6 +52,7 @@ export const run = async ({ payload, io }: { payload: TProcessSigningReminderJob
     data: {
       lastReminderSentAt: now,
       nextReminderAt: null,
+      reminderCount: { increment: 1 },
     },
   });
 
@@ -108,9 +108,10 @@ export const run = async ({ payload, io }: { payload: TProcessSigningReminderJob
     organisationType,
     senderEmail,
     replyToEmail,
-    isOrganisationOwnerDisabled,
     organisationId,
     claims,
+    emailsDisabled,
+    emailTransport,
   } = await getEmailContext({
     emailType: 'RECIPIENT',
     source: {
@@ -120,9 +121,10 @@ export const run = async ({ payload, io }: { payload: TProcessSigningReminderJob
     meta: envelope.documentMeta,
   });
 
-  // Don't send reminders on behalf of a disabled (e.g. banned) account.
-  if (envelope.user.disabled || isOrganisationOwnerDisabled) {
-    io.logger.info(`Envelope ${envelope.id} owner is disabled, skipping reminder`);
+  // Don't send reminders if the owner is disabled (e.g. banned) or the organisation
+  // has email sending disabled.
+  if (envelope.user.disabled || emailsDisabled) {
+    io.logger.info(`Envelope ${envelope.id} skipping reminder: owner disabled or organisation emails disabled`);
     return;
   }
 
@@ -202,7 +204,7 @@ export const run = async ({ payload, io }: { payload: TProcessSigningReminderJob
       }),
     ]);
 
-    await mailer.sendMail({
+    await emailTransport.sendMail({
       to: {
         name: recipient.name,
         address: recipient.email,
@@ -242,13 +244,15 @@ export const run = async ({ payload, io }: { payload: TProcessSigningReminderJob
     });
   }
 
-  // Compute the next reminder time (repeat interval).
+  // reminderCount was incremented in the atomic claim above, so the value read
+  // here includes the reminder we just sent and gates the next one.
   if (recipient.sentAt) {
     await updateRecipientNextReminder({
       recipientId: recipient.id,
       envelopeId: envelope.id,
       sentAt: recipient.sentAt,
       lastReminderSentAt: now,
+      reminderCount: recipient.reminderCount,
     });
   }
 };
